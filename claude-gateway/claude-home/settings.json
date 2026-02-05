@@ -6,25 +6,34 @@
   "permissions": {
     "allow": [
       "Bash(~/.claude/scripts/*)",
+      "Bash(~/.claude/bin/*)",
+      "Bash(~/.claude/hooks/*)",
       "Read(~/.claude/**)",
       "Edit(~/.claude/personalities/_shared/MEMORY.md)",
-      "Edit(~/.claude/personalities/_shared/USER.md)"
+      "Edit(~/.claude/personalities/_shared/USER.md)",
+      "Edit(~/.claude/memory/hot/*)"
     ]
   },
 
   "env": {
     "CLAUDE_GATEWAY": "true",
-    "CLAUDE_AUTO_SWITCH": "true"
+    "CLAUDE_AUTO_SWITCH": "true",
+    "MEMORY_ENABLED": "true"
   },
 
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup",
+        "matcher": "startup|resume",
         "hooks": [
           {
             "type": "command",
             "command": "~/.claude/scripts/detect-context.sh | xargs ~/.claude/scripts/switch-personality.sh >/dev/null 2>&1; cat ~/.claude/active-personality/IDENTITY.md | head -5"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-session-start.sh",
+            "timeout": 5
           }
         ]
       }
@@ -32,11 +41,55 @@
 
     "UserPromptSubmit": [
       {
-        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
             "command": "if [ \"$CLAUDE_AUTO_SWITCH\" = \"true\" ]; then ~/.claude/scripts/detect-context.sh \"$CLAUDE_USER_PROMPT\" | xargs ~/.claude/scripts/switch-personality.sh 2>/dev/null || true; fi"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-prompt-submit.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|Bash|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-post-tool.sh",
+            "async": true,
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+
+    "PreCompact": [
+      {
+        "matcher": "auto|manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-pre-compact.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-stop.sh",
+            "async": true,
+            "timeout": 30
           }
         ]
       }

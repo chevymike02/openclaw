@@ -6,8 +6,9 @@
 # This will:
 # 1. Create ~/.claude/ directory structure
 # 2. Copy personality files
-# 3. Set up scripts and hooks
-# 4. Create active-personality symlink
+# 3. Set up scripts, hooks, and memory CLI
+# 4. Initialize memory system
+# 5. Create active-personality symlink
 
 set -e
 
@@ -46,7 +47,15 @@ mkdir -p "$TARGET_DIR/personalities/dev-lead"
 mkdir -p "$TARGET_DIR/personalities/finance"
 mkdir -p "$TARGET_DIR/personalities/general"
 mkdir -p "$TARGET_DIR/scripts"
+mkdir -p "$TARGET_DIR/hooks"
+mkdir -p "$TARGET_DIR/bin"
 mkdir -p "$TARGET_DIR/commands"
+mkdir -p "$TARGET_DIR/memory/hot"
+mkdir -p "$TARGET_DIR/memory/warm/chunks"
+mkdir -p "$TARGET_DIR/memory/cold"
+mkdir -p "$TARGET_DIR/memory/queue/capture"
+mkdir -p "$TARGET_DIR/memory/queue/process"
+mkdir -p "$TARGET_DIR/memory/queue/embed"
 
 # Copy files
 echo "Copying personality files..."
@@ -62,6 +71,20 @@ cp "$SOURCE_DIR/personalities/general/"* "$TARGET_DIR/personalities/general/"
 echo "Installing scripts..."
 cp "$SOURCE_DIR/scripts/"* "$TARGET_DIR/scripts/"
 chmod +x "$TARGET_DIR/scripts/"*
+
+# Copy and make hooks executable
+echo "Installing hooks..."
+cp "$SOURCE_DIR/hooks/"* "$TARGET_DIR/hooks/"
+chmod +x "$TARGET_DIR/hooks/"*
+
+# Copy and make bin tools executable
+echo "Installing memory CLI..."
+cp "$SOURCE_DIR/bin/"* "$TARGET_DIR/bin/"
+chmod +x "$TARGET_DIR/bin/"*
+
+# Initialize memory system
+echo "Initializing memory system..."
+"$TARGET_DIR/bin/memory" init
 
 # Create active-personality symlink (default to general)
 echo "Setting up active personality..."
@@ -82,14 +105,28 @@ echo "  │   ├── _shared/ (SOUL.md, USER.md, MEMORY.md)"
 echo "  │   ├── dev-lead/"
 echo "  │   ├── finance/"
 echo "  │   └── general/"
-echo "  └── scripts/"
+echo "  ├── scripts/"
+echo "  ├── hooks/"
+echo "  ├── bin/"
+echo "  │   └── memory (CLI tool)"
+echo "  └── memory/"
+echo "      ├── hot/    (always loaded)"
+echo "      ├── warm/   (searchable)"
+echo "      └── cold/   (archived)"
 echo ""
 echo "Next steps:"
 echo "  1. Edit ~/.claude/personalities/_shared/USER.md with your info"
 echo "  2. Customize SOUL.md to match your preferred communication style"
 echo "  3. Start Claude Code - it will auto-detect context!"
 echo ""
-echo "Manual commands:"
-echo "  Switch personality: ~/.claude/scripts/switch-personality.sh <name>"
-echo "  Available: dev-lead, finance, general"
+echo "Commands:"
+echo "  Personality: ~/.claude/scripts/switch-personality.sh <name>"
+echo "  Memory:      ~/.claude/bin/memory <command>"
+echo ""
+echo "Memory commands:"
+echo "  memory capture \"thought...\"   Instant capture (<60s rule)"
+echo "  memory query \"search...\"      Search warm memory"
+echo "  memory hot                     View hot memory"
+echo "  memory pin \"important...\"     Pin to hot memory"
+echo "  memory stats                   Show statistics"
 echo ""
