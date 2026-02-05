@@ -1,0 +1,45 @@
+{
+  "$schema": "https://claude.ai/schemas/settings.json",
+
+  "model": "claude-sonnet-4-20250514",
+
+  "permissions": {
+    "allow": [
+      "Bash(~/.claude/scripts/*)",
+      "Read(~/.claude/**)",
+      "Edit(~/.claude/personalities/_shared/MEMORY.md)",
+      "Edit(~/.claude/personalities/_shared/USER.md)"
+    ]
+  },
+
+  "env": {
+    "CLAUDE_GATEWAY": "true",
+    "CLAUDE_AUTO_SWITCH": "true"
+  },
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/detect-context.sh | xargs ~/.claude/scripts/switch-personality.sh >/dev/null 2>&1; cat ~/.claude/active-personality/IDENTITY.md | head -5"
+          }
+        ]
+      }
+    ],
+
+    "UserPromptSubmit": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"$CLAUDE_AUTO_SWITCH\" = \"true\" ]; then ~/.claude/scripts/detect-context.sh \"$CLAUDE_USER_PROMPT\" | xargs ~/.claude/scripts/switch-personality.sh 2>/dev/null || true; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
