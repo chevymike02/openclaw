@@ -5,13 +5,66 @@
 
 ## Project Structure & Module Organization
 
-- Source code: `src/` (CLI wiring in `src/cli`, commands in `src/commands`, web provider in `src/provider-web.ts`, infra in `src/infra`, media pipeline in `src/media`).
-- Tests: colocated `*.test.ts`.
-- Docs: `docs/` (images, queue, Pi config). Built output lives in `dist/`.
-- Plugins/extensions: live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
-- Plugins: install runs `npm install --omit=dev` in plugin dir; runtime deps must live in `dependencies`. Avoid `workspace:*` in `dependencies` (npm install breaks); put `openclaw` in `devDependencies` or `peerDependencies` instead (runtime resolves `openclaw/plugin-sdk` via jiti alias).
+### Root Directory Layout
+```
+openclaw/
+├── .github/         # CI/CD workflows, issue templates, labeler
+├── .pi/             # Pi agent framework configuration
+├── apps/            # Native applications (macOS, iOS, Android)
+├── assets/          # Build assets (Chrome extension, images)
+├── docs/            # Mintlify documentation (docs.openclaw.ai)
+├── extensions/      # Plugin extensions (30+ workspace packages)
+├── packages/        # Internal NPM packages (clawdbot, moltbot)
+├── scripts/         # Build, deployment, utility scripts
+├── src/             # Core TypeScript source code
+├── ui/              # Web UI (Vite/React)
+├── vendor/          # Vendored dependencies (A2UI)
+└── dist/            # Built output (gitignored)
+```
+
+### Source Code (`src/`)
+- **CLI wiring**: `src/cli/` (~100 files) - Commander.js commands, argument parsing
+- **Commands**: `src/commands/` (~200 files) - High-level command implementations
+- **Gateway**: `src/gateway/` (~80 files) - WebSocket control plane server
+- **Agent system**: `src/agents/`, `src/pi-tools/`, `src/bash-tools/` - Pi agent integration
+- **Channels**: `src/telegram`, `src/discord`, `src/slack`, `src/signal`, `src/imessage`, `src/whatsapp`, `src/line`, `src/feishu`
+- **Infrastructure**: `src/infra/`, `src/config/`, `src/security/`, `src/logging/`
+- **Media**: `src/media/`, `src/media-understanding/`, `src/tts/`
+- **Data**: `src/sessions/`, `src/memory/`
+- **UI**: `src/tui/`, `src/terminal/`, `src/wizard/`
+- **Entry points**: `src/index.ts`, `src/entry.ts`, `src/runtime.ts`
+
+### Native Apps (`apps/`)
+- **macOS**: `apps/macos/` - Swift/SwiftUI app with Xcode project
+- **iOS**: `apps/ios/` - Swift app with XcodeGen (`project.yml`) + fastlane
+- **Android**: `apps/android/` - Kotlin app with Gradle (`build.gradle.kts`)
+- **Shared**: `apps/shared/OpenClawKit/` - Cross-platform Swift code, protocol models
+
+### Extensions (`extensions/`)
+30+ plugin workspace packages, each with `package.json` and `openclaw.plugin.json`:
+- **Channels**: bluebubbles, discord, imessage, line, matrix, mattermost, msteams, nextcloud-talk, signal, slack, telegram, tlon, twitch, whatsapp, zalo, zalouser, voice-call
+- **Features**: diagnostics-otel, llm-task, memory-core, memory-lancedb, open-prose, lobster, copilot-proxy, nostr
+- **Auth**: google-antigravity-auth, google-gemini-cli-auth, minimax-portal-auth, qwen-portal-auth
+
+### UI (`ui/`)
+Separate Vite/React web interface with own `package.json`. Built via `pnpm ui:build`.
+
+### Packages (`packages/`)
+Internal npm workspace packages: `clawdbot`, `moltbot` (bot instance variants).
+
+### Tests
+- Colocated `*.test.ts` files next to source
+- E2E tests: `*.e2e.test.ts`
+- Live tests: `*.live.test.ts` (require API keys)
+- Config files: `vitest.config.ts`, `vitest.e2e.config.ts`, `vitest.live.config.ts`, `vitest.gateway.config.ts`, `vitest.extensions.config.ts`
+
+### Plugin System
+- Plugins/extensions live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
+- Install runs `npm install --omit=dev` in plugin dir; runtime deps must live in `dependencies`. Avoid `workspace:*` in `dependencies` (npm install breaks); put `openclaw` in `devDependencies` or `peerDependencies` instead (runtime resolves `openclaw/plugin-sdk` via jiti alias).
 - Installers served from `https://openclaw.ai/*`: live in the sibling repo `../openclaw.ai` (`public/install.sh`, `public/install-cli.sh`, `public/install.ps1`).
-- Messaging channels: always consider **all** built-in + extension channels when refactoring shared logic (routing, allowlists, pairing, command gating, onboarding, docs).
+
+### Messaging Channels
+Always consider **all** built-in + extension channels when refactoring shared logic (routing, allowlists, pairing, command gating, onboarding, docs).
   - Core channel docs: `docs/channels/`
   - Core channel code: `src/telegram`, `src/discord`, `src/slack`, `src/signal`, `src/imessage`, `src/web` (WhatsApp web), `src/channels`, `src/routing`
   - Extensions (channel plugins): `extensions/*` (e.g. `extensions/msteams`, `extensions/matrix`, `extensions/zalo`, `extensions/zalouser`, `extensions/voice-call`)
@@ -60,6 +113,76 @@
 - Type-check/build: `pnpm build`
 - Lint/format: `pnpm check`
 - Tests: `pnpm test` (vitest); coverage: `pnpm test:coverage`
+
+### Full Command Reference
+```bash
+pnpm build              # TypeScript compilation + canvas bundling
+pnpm check              # Type-check + lint + format (all three)
+pnpm test               # Unit tests (Vitest)
+pnpm test:e2e           # End-to-end tests
+pnpm test:live          # Live API tests (requires LIVE=1 or CLAWDBOT_LIVE_TEST=1)
+pnpm test:coverage      # Unit tests with coverage reporting
+pnpm test:docker:*      # Docker-based integration tests
+pnpm lint               # Oxlint (type-aware)
+pnpm format             # Oxfmt code formatter
+pnpm canvas:a2ui:bundle # Bundle A2UI renderer
+pnpm ui:build           # Web UI build
+pnpm mac:package        # Create macOS .app and .dmg
+pnpm ios:build          # Build iOS app
+pnpm android:assemble   # Build Android app
+```
+
+## Scripts Organization
+
+Key scripts in `scripts/`:
+- **Build**: `bundle-a2ui.sh`, `canvas-a2ui-copy.ts`, `write-build-info.ts`
+- **Mac packaging**: `package-mac-app.sh`, `codesign-mac-app.sh`, `notarize-mac-artifact.sh`
+- **Testing**: `test-*.docker.sh`, `e2e/` directory
+- **Utilities**: `committer` (atomic commits), `release-check.ts`, `clawlog.sh` (macOS logs), `sync-plugin-versions.ts`
+- **Contributors**: `update-clawtributors.ts` (README avatar list)
+
+## Docker
+
+- **Dockerfile**: Production image (Node 22 Bookworm, non-root user). Installs Bun + pnpm, builds source + web UI. Default command: `gateway --allow-unconfigured`.
+- **Dockerfile.sandbox**: Sandbox execution environment for agent tools.
+- **Dockerfile.sandbox-browser**: Browser sandbox with Chromium.
+- Docker tests: `pnpm test:docker:live-models`, `pnpm test:docker:live-gateway`, `pnpm test:docker:onboard`.
+
+## CI/CD (`.github/workflows/`)
+
+- **ci.yml**: Main pipeline - install check (frozen lockfile), parallel checks (TypeScript, lint, test, protocol, format), both Node and Bun runtime testing.
+- **docker-release.yml**: Docker image build & publish to registry.
+- **install-smoke.yml**: Installation smoke tests across platforms.
+- **formal-conformance.yml**: Formal specification testing.
+- **auto-response.yml**: GitHub issue auto-responses.
+- PR labeling configured in `.github/labeler.yml`.
+
+## Key Dependencies
+
+### Core Framework
+- **@mariozechner/pi-agent-core**: Agent framework
+- **@agentclientprotocol/sdk**: Agent protocol
+- **hono**, **express**: Web frameworks
+- **commander**: CLI framework
+
+### Messaging
+- **@whiskeysockets/baileys**: WhatsApp Web
+- **@slack/bolt**: Slack
+- **grammy**: Telegram
+- **discord-api-types**: Discord
+- **signal-utils**: Signal
+- **@line/bot-sdk**: LINE
+
+### AI & Processing
+- **@buape/carbon**: LLM provider library (do not update)
+- **pdfjs-dist**: PDF extraction
+- **sharp**: Image processing
+
+### Utilities
+- **zod**: Schema validation
+- **yaml**: YAML parsing
+- **chalk**: Colored output
+- **markdown-it**: Markdown parsing
 
 ## Coding Style & Naming Conventions
 
