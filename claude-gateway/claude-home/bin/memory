@@ -1,0 +1,577 @@
+#!/bin/bash
+# memory - Claude Gateway Memory CLI
+#
+# Multi-layered memory system with hot/warm/cold storage
+# Designed for instant capture (<60s) and fast retrieval
+
+set -e
+
+MEMORY_HOME="${CLAUDE_MEMORY_HOME:-$HOME/.claude/memory}"
+HOT_DIR="$MEMORY_HOME/hot"
+WARM_DIR="$MEMORY_HOME/warm"
+COLD_DIR="$MEMORY_HOME/cold"
+QUEUE_DIR="$MEMORY_HOME/queue"
+
+# Ensure directories exist
+mkdir -p "$HOT_DIR" "$WARM_DIR/chunks" "$COLD_DIR" "$QUEUE_DIR"/{capture,process,embed}
+
+# Generate unique ID
+generate_id() {
+    local prefix="$1"
+    echo "${prefix}_$(date -u +%Y%m%d_%H%M%S)_$(head -c 4 /dev/urandom | xxd -p)"
+}
+
+# Get current timestamp
+timestamp() {
+    date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+# ─────────────────────────────────────────────────────────────
+# CAPTURE - Instant thought capture (< 60 second rule)
+# ─────────────────────────────────────────────────────────────
+cmd_capture() {
+    local tags=""
+    local source="text"
+    local content=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tags)
+                tags="$2"
+                shift 2
+                ;;
+            --source)
+                source="$2"
+                shift 2
+                ;;
+            --voice)
+                # TODO: Integrate with whisper or similar
+                echo "Voice capture not yet implemented" >&2
+                exit 1
+                ;;
+            *)
+                content="$1"
+                shift
+                ;;
+        esac
+    done
+
+    # Read from stdin if no content provided
+    if [[ -z "$content" ]]; then
+        content=$(cat)
+    fi
+
+    if [[ -z "$content" ]]; then
+        echo "Error: No content provided" >&2
+        exit 1
+    fi
+
+    local id=$(generate_id "cap")
+    local ts=$(timestamp)
+    local today=$(date -u +%Y/%m/%d)
+
+    # Store raw capture in cold storage (never lost)
+    mkdir -p "$COLD_DIR/$today/raw"
+
+    cat > "$COLD_DIR/$today/raw/$id.json" <<EOF
+{
+  "id": "$id",
+  "timestamp": "$ts",
+  "type": "capture",
+  "source": "$source",
+  "content": $(echo "$content" | jq -Rs .),
+  "tags": $(echo "$tags" | jq -Rs 'split(",") | map(select(length > 0))'),
+  "processed": false
+}
+EOF
+
+    # Queue for processing
+    ln -sf "$COLD_DIR/$today/raw/$id.json" "$QUEUE_DIR/capture/$id.json"
+
+    # Also add to recent.md for immediate hot memory access
+    echo "- [$ts] $content" >> "$HOT_DIR/recent.md"
+
+    # Trim recent.md to last 20 entries
+    if [[ -f "$HOT_DIR/recent.md" ]]; then
+        tail -n 20 "$HOT_DIR/recent.md" > "$HOT_DIR/recent.md.tmp"
+        mv "$HOT_DIR/recent.md.tmp" "$HOT_DIR/recent.md"
+    fi
+
+    echo "$id"
+}
+
+# ─────────────────────────────────────────────────────────────
+# QUERY - Fast semantic search
+# ─────────────────────────────────────────────────────────────
+cmd_query() {
+    local limit=5
+    local json_output=false
+    local project=""
+    local since=""
+    local query=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --limit)
+                limit="$2"
+                shift 2
+                ;;
+            --json)
+                json_output=true
+                shift
+                ;;
+            --project)
+                project="$2"
+                shift 2
+                ;;
+            --since)
+                since="$2"
+                shift 2
+                ;;
+            *)
+                query="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$query" ]]; then
+        echo "Error: No query provided" >&2
+        exit 1
+    fi
+
+    # Simple text search through warm chunks
+    # TODO: Replace with vector search when embeddings are set up
+    local results=()
+
+    # Search warm chunks
+    if [[ -d "$WARM_DIR/chunks" ]]; then
+        while IFS= read -r file; do
+            if [[ -f "$file" ]]; then
+                local content=$(jq -r '.content' "$file" 2>/dev/null)
+                local chunk_id=$(jq -r '.id' "$file" 2>/dev/null)
+
+                # Simple keyword matching (placeholder for vector search)
+                if echo "$content" | grep -qi "$query"; then
+                    results+=("$file")
+                fi
+            fi
+        done < <(find "$WARM_DIR/chunks" -name "*.json" -type f 2>/dev/null | head -n 100)
+    fi
+
+    # Also search recent captures
+    local today=$(date -u +%Y/%m/%d)
+    if [[ -d "$COLD_DIR/$today/raw" ]]; then
+        while IFS= read -r file; do
+            if [[ -f "$file" ]]; then
+                local content=$(jq -r '.content' "$file" 2>/dev/null)
+                if echo "$content" | grep -qi "$query"; then
+                    results+=("$file")
+                fi
+            fi
+        done < <(find "$COLD_DIR/$today/raw" -name "*.json" -type f 2>/dev/null | head -n 50)
+    fi
+
+    # Output results
+    if $json_output; then
+        local json_results="["
+        local first=true
+        local count=0
+
+        for file in "${results[@]}"; do
+            if [[ $count -ge $limit ]]; then
+                break
+            fi
+
+            if ! $first; then
+                json_results+=","
+            fi
+            first=false
+
+            json_results+=$(jq '{id: .id, content: .content, timestamp: .timestamp}' "$file")
+            ((count++))
+        done
+
+        json_results+="]"
+        echo "$json_results"
+    else
+        local count=0
+        for file in "${results[@]}"; do
+            if [[ $count -ge $limit ]]; then
+                break
+            fi
+
+            local content=$(jq -r '.content' "$file" 2>/dev/null)
+            local ts=$(jq -r '.timestamp' "$file" 2>/dev/null)
+            echo "[$ts] $content"
+            echo ""
+            ((count++))
+        done
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────
+# HOT - View/manage hot memory
+# ─────────────────────────────────────────────────────────────
+cmd_hot() {
+    # Output all hot memory files
+    for file in "$HOT_DIR"/*.md; do
+        if [[ -f "$file" ]]; then
+            echo "# $(basename "$file" .md)"
+            cat "$file"
+            echo ""
+        fi
+    done
+}
+
+# ─────────────────────────────────────────────────────────────
+# PIN - Add to persistent hot memory
+# ─────────────────────────────────────────────────────────────
+cmd_pin() {
+    local content="$*"
+
+    if [[ -z "$content" ]]; then
+        content=$(cat)
+    fi
+
+    if [[ -z "$content" ]]; then
+        echo "Error: No content to pin" >&2
+        exit 1
+    fi
+
+    local id=$(generate_id "pin")
+    local ts=$(timestamp)
+
+    # Create pins.md if it doesn't exist
+    if [[ ! -f "$HOT_DIR/pins.md" ]]; then
+        echo "# Pinned Items" > "$HOT_DIR/pins.md"
+        echo "" >> "$HOT_DIR/pins.md"
+    fi
+
+    echo "- **[$id]** $content" >> "$HOT_DIR/pins.md"
+    echo "$id"
+}
+
+# ─────────────────────────────────────────────────────────────
+# UNPIN - Remove from hot memory
+# ─────────────────────────────────────────────────────────────
+cmd_unpin() {
+    local pin_id="$1"
+
+    if [[ -z "$pin_id" ]]; then
+        echo "Error: No pin ID provided" >&2
+        exit 1
+    fi
+
+    if [[ -f "$HOT_DIR/pins.md" ]]; then
+        grep -v "\[$pin_id\]" "$HOT_DIR/pins.md" > "$HOT_DIR/pins.md.tmp"
+        mv "$HOT_DIR/pins.md.tmp" "$HOT_DIR/pins.md"
+        echo "Unpinned: $pin_id"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────
+# FOCUS - Manage focus areas
+# ─────────────────────────────────────────────────────────────
+cmd_focus() {
+    local action="${1:-show}"
+    shift || true
+
+    case "$action" in
+        show)
+            if [[ -f "$HOT_DIR/focus.md" ]]; then
+                cat "$HOT_DIR/focus.md"
+            else
+                echo "No focus areas set"
+            fi
+            ;;
+        set)
+            echo "# Current Focus Areas" > "$HOT_DIR/focus.md"
+            echo "" >> "$HOT_DIR/focus.md"
+            for area in "$@"; do
+                echo "- $area" >> "$HOT_DIR/focus.md"
+            done
+            echo "Focus areas updated"
+            ;;
+        add)
+            if [[ ! -f "$HOT_DIR/focus.md" ]]; then
+                echo "# Current Focus Areas" > "$HOT_DIR/focus.md"
+                echo "" >> "$HOT_DIR/focus.md"
+            fi
+            for area in "$@"; do
+                echo "- $area" >> "$HOT_DIR/focus.md"
+            done
+            echo "Added focus areas"
+            ;;
+        remove)
+            if [[ -f "$HOT_DIR/focus.md" ]]; then
+                for area in "$@"; do
+                    grep -v "^- $area$" "$HOT_DIR/focus.md" > "$HOT_DIR/focus.md.tmp"
+                    mv "$HOT_DIR/focus.md.tmp" "$HOT_DIR/focus.md"
+                done
+                echo "Removed focus areas"
+            fi
+            ;;
+        *)
+            echo "Usage: memory focus [show|set|add|remove] [areas...]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# ─────────────────────────────────────────────────────────────
+# LOG - Queue for background processing
+# ─────────────────────────────────────────────────────────────
+cmd_log() {
+    local log_type="$1"
+    shift
+    local content="$*"
+
+    if [[ -z "$content" ]]; then
+        content=$(cat)
+    fi
+
+    local id=$(generate_id "log")
+    local ts=$(timestamp)
+    local today=$(date -u +%Y/%m/%d)
+
+    mkdir -p "$COLD_DIR/$today/logs"
+
+    cat > "$COLD_DIR/$today/logs/$id.json" <<EOF
+{
+  "id": "$id",
+  "timestamp": "$ts",
+  "type": "$log_type",
+  "content": $(echo "$content" | jq -Rs .),
+  "processed": false
+}
+EOF
+
+    # Queue for processing
+    ln -sf "$COLD_DIR/$today/logs/$id.json" "$QUEUE_DIR/process/$id.json"
+
+    echo "$id"
+}
+
+# ─────────────────────────────────────────────────────────────
+# PROCESS - Process queued items (run by daemon)
+# ─────────────────────────────────────────────────────────────
+cmd_process() {
+    local count=0
+
+    # Process capture queue
+    for file in "$QUEUE_DIR/capture"/*.json; do
+        if [[ -f "$file" ]]; then
+            local source_file=$(readlink -f "$file")
+
+            # Mark as processed
+            jq '.processed = true' "$source_file" > "$source_file.tmp"
+            mv "$source_file.tmp" "$source_file"
+
+            # Create warm chunk (simplified - just copy for now)
+            local id=$(jq -r '.id' "$source_file")
+            local chunk_id=$(generate_id "chunk")
+
+            jq --arg chunk_id "$chunk_id" '{
+                id: $chunk_id,
+                content: .content,
+                metadata: {
+                    source_id: .id,
+                    created: .timestamp,
+                    tags: .tags
+                }
+            }' "$source_file" > "$WARM_DIR/chunks/$chunk_id.json"
+
+            # Remove from queue
+            rm "$file"
+            ((count++))
+        fi
+    done 2>/dev/null
+
+    # Process log queue
+    for file in "$QUEUE_DIR/process"/*.json; do
+        if [[ -f "$file" ]]; then
+            local source_file=$(readlink -f "$file")
+
+            # Mark as processed
+            jq '.processed = true' "$source_file" > "$source_file.tmp"
+            mv "$source_file.tmp" "$source_file"
+
+            # Remove from queue
+            rm "$file"
+            ((count++))
+        fi
+    done 2>/dev/null
+
+    echo "Processed $count items"
+}
+
+# ─────────────────────────────────────────────────────────────
+# STATS - Memory statistics
+# ─────────────────────────────────────────────────────────────
+cmd_stats() {
+    echo "Memory Statistics"
+    echo "================="
+    echo ""
+
+    # Hot memory
+    echo "HOT MEMORY:"
+    if [[ -d "$HOT_DIR" ]]; then
+        local hot_files=$(find "$HOT_DIR" -name "*.md" -type f 2>/dev/null | wc -l)
+        local hot_size=$(du -sh "$HOT_DIR" 2>/dev/null | cut -f1)
+        echo "  Files: $hot_files"
+        echo "  Size: $hot_size"
+    else
+        echo "  Not initialized"
+    fi
+    echo ""
+
+    # Warm memory
+    echo "WARM MEMORY:"
+    if [[ -d "$WARM_DIR/chunks" ]]; then
+        local warm_chunks=$(find "$WARM_DIR/chunks" -name "*.json" -type f 2>/dev/null | wc -l)
+        local warm_size=$(du -sh "$WARM_DIR" 2>/dev/null | cut -f1)
+        echo "  Chunks: $warm_chunks"
+        echo "  Size: $warm_size"
+    else
+        echo "  Not initialized"
+    fi
+    echo ""
+
+    # Cold memory
+    echo "COLD MEMORY:"
+    if [[ -d "$COLD_DIR" ]]; then
+        local cold_files=$(find "$COLD_DIR" -name "*.json" -type f 2>/dev/null | wc -l)
+        local cold_size=$(du -sh "$COLD_DIR" 2>/dev/null | cut -f1)
+        echo "  Files: $cold_files"
+        echo "  Size: $cold_size"
+    else
+        echo "  Not initialized"
+    fi
+    echo ""
+
+    # Queue
+    echo "QUEUE:"
+    local capture_queue=$(find "$QUEUE_DIR/capture" -name "*.json" -type l 2>/dev/null | wc -l)
+    local process_queue=$(find "$QUEUE_DIR/process" -name "*.json" -type l 2>/dev/null | wc -l)
+    echo "  Capture: $capture_queue pending"
+    echo "  Process: $process_queue pending"
+}
+
+# ─────────────────────────────────────────────────────────────
+# INIT - Initialize memory system
+# ─────────────────────────────────────────────────────────────
+cmd_init() {
+    echo "Initializing memory system..."
+
+    mkdir -p "$HOT_DIR" "$WARM_DIR/chunks" "$COLD_DIR" "$QUEUE_DIR"/{capture,process,embed}
+
+    # Create default hot memory files
+    if [[ ! -f "$HOT_DIR/focus.md" ]]; then
+        cat > "$HOT_DIR/focus.md" <<'EOF'
+# Current Focus Areas
+
+Add your active projects and priorities here.
+
+## Active Projects
+- (none yet)
+
+## This Week's Priorities
+- (none yet)
+EOF
+    fi
+
+    if [[ ! -f "$HOT_DIR/recent.md" ]]; then
+        echo "# Recent Items" > "$HOT_DIR/recent.md"
+    fi
+
+    if [[ ! -f "$HOT_DIR/pins.md" ]]; then
+        echo "# Pinned Items" > "$HOT_DIR/pins.md"
+    fi
+
+    echo "Memory system initialized at $MEMORY_HOME"
+}
+
+# ─────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────
+usage() {
+    cat <<EOF
+memory - Claude Gateway Memory System
+
+CAPTURE (Instant, <60s rule):
+  memory capture "thought..."         Capture a thought immediately
+  memory capture --tags "a,b" "..."   Capture with tags
+
+QUERY (Fast search):
+  memory query "search terms"         Search warm memory
+  memory query --json "..."           Output as JSON
+  memory query --limit 3 "..."        Limit results
+
+HOT MEMORY:
+  memory hot                          View all hot memory
+  memory pin "important info"         Pin to hot memory
+  memory unpin <id>                   Remove pin
+  memory focus show                   Show focus areas
+  memory focus set a b c              Set focus areas
+  memory focus add d                  Add focus area
+
+LOGGING:
+  memory log decision "..."           Log a decision
+  memory log action "..."             Log an action
+  memory log learning "..."           Log a learning
+
+MAINTENANCE:
+  memory process                      Process queued items
+  memory stats                        Show statistics
+  memory init                         Initialize system
+
+EOF
+    exit 1
+}
+
+case "${1:-}" in
+    capture)
+        shift
+        cmd_capture "$@"
+        ;;
+    query)
+        shift
+        cmd_query "$@"
+        ;;
+    hot)
+        shift
+        cmd_hot "$@"
+        ;;
+    pin)
+        shift
+        cmd_pin "$@"
+        ;;
+    unpin)
+        shift
+        cmd_unpin "$@"
+        ;;
+    focus)
+        shift
+        cmd_focus "$@"
+        ;;
+    log)
+        shift
+        cmd_log "$@"
+        ;;
+    process)
+        shift
+        cmd_process "$@"
+        ;;
+    stats)
+        shift
+        cmd_stats "$@"
+        ;;
+    init)
+        shift
+        cmd_init "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac
